@@ -1,0 +1,122 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "Suzanne"
+date: "Monday, November 16, 2015"
+output: html_document
+---
+
+Start by reading in the train and test sets from the cloudfront site.
+```{r}
+require(RCurl)
+require(plyr)
+require(dplyr)
+require(caret)
+require(randomForest)
+
+trainURL <- getURL("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+                   ,.opts = list(ssl.verifypeer = FALSE))
+traincsv <- read.csv(textConnection(trainURL), na.strings=c("",".","NA"))
+glimpse(traincsv)
+
+testURL <- getURL("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+                  ,.opts = list(ssl.verifypeer = FALSE))
+testcsv <- read.csv(textConnection(testURL), na.strings=c("",".","NA"))
+
+set.seed(111)
+```
+
+Clean the training data by removing columns that are not populated consistently. I leveraged Michael Szczepaniak's approach shared on the Community Forum.
+
+```{r}
+##Reference: Michael Szczepaniak on Community Forum 
+## Creates a data frame with three columns: index, ColumnName and
+## FractionMissing.
+## index is the column index in df corresponding to ColumnName
+## ColumnName is as the name implies: the name the column in df
+## FractionMissing is the fraction of values that are missing, NA, or, Zero.
+## The closer this value is to 1, the less data the column contains
+
+getFractionMissing <- function(df) {
+    colCount <- ncol(df)
+    
+    returnDf <- data.frame(index=1:ncol(df),
+                           columnName=rep("undefined", colCount),
+                           FractionMissing=rep(-1, colCount),
+                           stringsAsFactors=FALSE)
+    for(i in 1:colCount) {
+        colVector <- df[,i]
+        #missingCount <- length(which(colVector == "") * 1)
+        zeroCount <- length(which(colVector == 0) * 1)
+        missingCount <-zeroCount + sum(is.na(colVector) * 1)
+        returnDf$columnName[i] <- as.character(names(df)[i])
+        returnDf$FractionMissing[i] <- missingCount / length(colVector)
+    }
+
+    return(returnDf)
+}
+
+fracMissing <- getFractionMissing(traincsv)
+
+#If more than 30% in training data, remove the column from both training and test sets
+RemoveColName <- fracMissing[fracMissing$FractionMissing >= .30,2]
+
+trainData <- subset(traincsv, select = ! names(traincsv) %in% RemoveColName)
+trainCol <- names(trainData)
+testData <- subset(testcsv, select = names(testcsv) %in% trainCol)
+```
+
+Check that remaining columns are informative -- do not take unique values across entire data set 
+All columns come back FALSE
+```{r}
+nsv <- nearZeroVar(trainData[,-(1:6)], saveMetrics = TRUE)
+nsv
+```
+
+Check to ensure all columns in training set are also in test set
+```{r}
+trainData[1,-which(names(testData) %in% names(trainData))]
+##classe field is missing in the testData
+```
+
+
+Model the data using bagged decision trees 
+```{r}
+inTrain <- createDataPartition(y=trainData$classe, p=0.60,list=FALSE)
+Train <- trainData[inTrain,]
+Validate <- trainData[-inTrain,]
+fitControl <- trainControl(method = "cv"
+                           , number = 3)
+fitM1 <- randomForest(classe~., data = Train[,-(1:7)]
+                      , importance =TRUE
+                      , ntree = 100
+                      , mtry = 6)
+
+```
+
+Model appears quite accurate. Let's view the most important predictors
+```{r}
+varImpPlot(fitM1)
+```
+
+Predict new values on the Validate set
+```{r}
+pred <- predict(fitM1,Validate)
+Validate$predRight <- pred==Validate$classe
+table(pred,Validate$classe)
+qplot(user_name, yaw_belt, colour=predRight, data = Validate)
+```
+
+Send predicted answers to working directory based on submission instructions
+```{r}
+answers <- predict(fitM1, testData)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+```
+
